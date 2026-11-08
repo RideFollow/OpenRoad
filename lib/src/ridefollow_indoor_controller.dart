@@ -22,6 +22,8 @@ class IndoorRideSample {
     this.powerWatts,
     this.heartRateBpm,
     this.resistanceLevel,
+    required this.virtualGear,
+    required this.trainerGradePercent,
   });
   final RoutePosition position;
   final double speedKmh;
@@ -30,6 +32,8 @@ class IndoorRideSample {
   final int? powerWatts;
   final int? heartRateBpm;
   final double? resistanceLevel;
+  final int virtualGear;
+  final double trainerGradePercent;
 }
 
 /// Bluetooth FTMS adapter around the pure [OpenRoadEngine].
@@ -51,6 +55,20 @@ class OpenRoad {
   OpenRoadEngine? _engine;
   DateTime? _lastDataAt;
   double? _lastGrade;
+  int _virtualGear = OpenRoadVirtualGearing.neutralGear;
+
+  int get virtualGear => _virtualGear;
+
+  void setVirtualGear(int gear) {
+    final next = OpenRoadVirtualGearing.clamp(gear);
+    if (next == _virtualGear) return;
+    _virtualGear = next;
+    _lastGrade = null;
+    _applyTrainerSimulation();
+  }
+
+  void shiftUp() => setVirtualGear(_virtualGear + 1);
+  void shiftDown() => setVirtualGear(_virtualGear - 1);
 
   Future<void> scan({Duration timeout = const Duration(seconds: 8)}) async {
     _found.clear();
@@ -102,6 +120,7 @@ class OpenRoad {
     OpenRoadParameters parameters = const OpenRoadParameters(),
   }) {
     _engine = OpenRoadEngine(route: route, parameters: parameters);
+    _virtualGear = OpenRoadVirtualGearing.neutralGear;
     _lastDataAt = null;
     _lastGrade = null;
   }
@@ -117,6 +136,10 @@ class OpenRoad {
         _lastDataAt == null ? Duration.zero : now.difference(_lastDataAt!);
     _lastDataAt = now;
     final frame = engine.advance(bike, elapsed);
+    final trainerGrade = OpenRoadVirtualGearing.effectiveGrade(
+      frame.position.gradePercent,
+      _virtualGear,
+    );
     _samples.add(IndoorRideSample(
       position: frame.position,
       speedKmh: frame.virtualSpeedKmh,
@@ -125,23 +148,35 @@ class OpenRoad {
       powerWatts: frame.powerWatts,
       heartRateBpm: frame.heartRateBpm,
       resistanceLevel: frame.resistanceLevel,
+      virtualGear: _virtualGear,
+      trainerGradePercent: trainerGrade,
     ));
     if (_control != null &&
-        (_lastGrade == null ||
-            (frame.position.gradePercent - _lastGrade!).abs() >= 0.2)) {
-      _lastGrade = frame.position.gradePercent;
-      final parameters = engine.parameters;
-      unawaited(
-        _control!.write(
-          FtmsBikeData.simulationParameters(
-            frame.position.gradePercent,
-            windSpeedMps: parameters.windSpeedMps,
-            rollingResistance: parameters.rollingResistance,
-            windResistanceKgM: parameters.ftmsWindResistanceKgM,
-          ),
-        ),
-      );
+        (_lastGrade == null || (trainerGrade - _lastGrade!).abs() >= 0.2)) {
+      _applyTrainerSimulation();
     }
+  }
+
+  void _applyTrainerSimulation() {
+    final control = _control;
+    final engine = _engine;
+    if (control == null || engine == null) return;
+    final grade = OpenRoadVirtualGearing.effectiveGrade(
+      engine.position.gradePercent,
+      _virtualGear,
+    );
+    _lastGrade = grade;
+    final parameters = engine.parameters;
+    unawaited(
+      control.write(
+        FtmsBikeData.simulationParameters(
+          grade,
+          windSpeedMps: parameters.windSpeedMps,
+          rollingResistance: parameters.rollingResistance,
+          windResistanceKgM: parameters.ftmsWindResistanceKgM,
+        ),
+      ),
+    );
   }
 
   Future<void> disconnect() async {

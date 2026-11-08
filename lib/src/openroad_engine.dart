@@ -3,6 +3,23 @@ import 'dart:math' as math;
 import 'ftms.dart';
 import 'gpx_route.dart';
 
+/// Zwift-style 24-speed virtual gearing for fixed-sprocket/Cog setups.
+///
+/// Gearing changes trainer feel only; movement still comes from measured power,
+/// just as it does outdoors. The offset is applied to the FTMS simulation grade.
+class OpenRoadVirtualGearing {
+  static const int minGear = 1;
+  static const int maxGear = 24;
+  static const int neutralGear = 12;
+  static const double gradePercentPerGear = 0.45;
+
+  static int clamp(int gear) => gear.clamp(minGear, maxGear);
+
+  static double effectiveGrade(double routeGradePercent, int gear) =>
+      (routeGradePercent + (clamp(gear) - neutralGear) * gradePercentPerGear)
+          .clamp(-20.0, 20.0);
+}
+
 /// Physical inputs used by OpenRoad to translate trainer power into movement.
 ///
 /// Defaults model a typical road-bike rider and can be overridden by the host

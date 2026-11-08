@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- Add 24-speed OpenRoad virtual gearing for fixed-sprocket and Zwift Cog setups.
+- Apply gear changes through standards-based FTMS simulation parameters.
+- Expose effective trainer grade and current virtual gear to host applications.
+
 ## 0.2.0
 
 - Add the pure OpenRoad power/gradient physics engine.

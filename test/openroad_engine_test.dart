@@ -58,4 +58,12 @@ void main() {
     );
     expect(frame.virtualSpeedKmh, 24);
   });
+
+  test('24-speed virtual gearing adjusts trainer grade and clamps', () {
+    expect(OpenRoadVirtualGearing.effectiveGrade(5, 12), 5);
+    expect(OpenRoadVirtualGearing.effectiveGrade(5, 24), closeTo(10.4, 0.01));
+    expect(OpenRoadVirtualGearing.effectiveGrade(5, 1), closeTo(0.05, 0.01));
+    expect(OpenRoadVirtualGearing.clamp(0), 1);
+    expect(OpenRoadVirtualGearing.clamp(25), 24);
+  });
 }

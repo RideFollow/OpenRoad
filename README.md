@@ -8,6 +8,12 @@ along the uploaded route without emitting fake GPS from the phone.
 The Van Rysel D100 is the reference device. Any trainer advertising the
 standard FTMS service (`0x1826`) should work.
 
+Zwift Hub, Zwift Ready, and Zwift Cog Compatible trainers can be used when they
+expose Bluetooth FTMS. OpenRoad includes independent 24-speed virtual gearing
+for fixed-sprocket/Cog setups. Native Zwift Click, Play, and Ride controller
+buttons use Zwift's encrypted accessory protocol and are not claimed as
+supported; use the host app's on-screen gears until that adapter is available.
+
 ## Principles
 
 - local-first: GPX and trainer data do not need a cloud service
