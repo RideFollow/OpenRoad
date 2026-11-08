@@ -4,6 +4,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import 'ftms.dart';
 import 'gpx_route.dart';
+import 'openroad_engine.dart';
 
 class IndoorTrainerDevice {
   const IndoorTrainerDevice(this.id, this.name, this._device);
@@ -16,16 +17,23 @@ class IndoorRideSample {
   const IndoorRideSample({
     required this.position,
     required this.speedKmh,
+    this.trainerSpeedKmh,
     this.cadenceRpm,
     this.powerWatts,
+    this.heartRateBpm,
+    this.resistanceLevel,
   });
   final RoutePosition position;
   final double speedKmh;
+  final double? trainerSpeedKmh;
   final double? cadenceRpm;
   final int? powerWatts;
+  final int? heartRateBpm;
+  final double? resistanceLevel;
 }
 
-class RideFollowIndoor {
+/// Bluetooth FTMS adapter around the pure [OpenRoadEngine].
+class OpenRoad {
   static final Guid _ftms = Guid('1826');
   static final Guid _bikeData = Guid('2ad2');
   static final Guid _controlPoint = Guid('2ad9');
@@ -40,8 +48,7 @@ class RideFollowIndoor {
   StreamSubscription<List<int>>? _dataSub;
   BluetoothDevice? _device;
   BluetoothCharacteristic? _control;
-  GpxRoute? _route;
-  double _distanceKm = 0;
+  OpenRoadEngine? _engine;
   DateTime? _lastDataAt;
   double? _lastGrade;
 
@@ -90,9 +97,11 @@ class RideFollowIndoor {
     }
   }
 
-  void start(GpxRoute route) {
-    _route = route;
-    _distanceKm = 0;
+  void start(
+    GpxRoute route, {
+    OpenRoadParameters parameters = const OpenRoadParameters(),
+  }) {
+    _engine = OpenRoadEngine(route: route, parameters: parameters);
     _lastDataAt = null;
     _lastGrade = null;
   }
@@ -100,30 +109,38 @@ class RideFollowIndoor {
   void pause() => _lastDataAt = null;
 
   void _onBikeData(List<int> value) {
-    final route = _route;
-    if (route == null) return;
+    final engine = _engine;
+    if (engine == null) return;
     final bike = FtmsBikeData.parse(value);
     final now = DateTime.now();
-    final dt = _lastDataAt == null
-        ? 0.0
-        : now.difference(_lastDataAt!).inMilliseconds.clamp(0, 3000) / 1000;
+    final elapsed =
+        _lastDataAt == null ? Duration.zero : now.difference(_lastDataAt!);
     _lastDataAt = now;
-    final speed = bike.speedKmh ?? 0;
-    _distanceKm = (_distanceKm + speed * dt / 3600).clamp(0, route.distanceKm);
-    final position = route.at(_distanceKm);
+    final frame = engine.advance(bike, elapsed);
     _samples.add(IndoorRideSample(
-      position: position,
-      speedKmh: speed,
-      cadenceRpm: bike.cadenceRpm,
-      powerWatts: bike.powerWatts,
+      position: frame.position,
+      speedKmh: frame.virtualSpeedKmh,
+      trainerSpeedKmh: frame.trainerSpeedKmh,
+      cadenceRpm: frame.cadenceRpm,
+      powerWatts: frame.powerWatts,
+      heartRateBpm: frame.heartRateBpm,
+      resistanceLevel: frame.resistanceLevel,
     ));
     if (_control != null &&
         (_lastGrade == null ||
-            (position.gradePercent - _lastGrade!).abs() >= 0.2)) {
-      _lastGrade = position.gradePercent;
-      unawaited(_control!.write(
-        FtmsBikeData.simulationParameters(position.gradePercent),
-      ));
+            (frame.position.gradePercent - _lastGrade!).abs() >= 0.2)) {
+      _lastGrade = frame.position.gradePercent;
+      final parameters = engine.parameters;
+      unawaited(
+        _control!.write(
+          FtmsBikeData.simulationParameters(
+            frame.position.gradePercent,
+            windSpeedMps: parameters.windSpeedMps,
+            rollingResistance: parameters.rollingResistance,
+            windResistanceKgM: parameters.ftmsWindResistanceKgM,
+          ),
+        ),
+      );
     }
   }
 
@@ -143,3 +160,6 @@ class RideFollowIndoor {
     await _samples.close();
   }
 }
+
+/// Backwards-compatible name for hosts that adopted the 0.1 preview.
+typedef RideFollowIndoor = OpenRoad;
