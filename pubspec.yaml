@@ -1,0 +1,17 @@
+name: ridefollow_indoor
+description: Open-source GPX-powered Bluetooth FTMS indoor cycling engine.
+version: 0.1.0
+repository: https://github.com/RideFollow/ridefollow-indoor
+license: MIT
+environment:
+  sdk: ^3.6.0
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_blue_plus: ^1.35.5
+  xml: ^6.6.1
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
