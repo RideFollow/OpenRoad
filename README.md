@@ -20,8 +20,9 @@ standard FTMS service (`0x1826`) should work.
 ```dart
 final road = RideFollowIndoor();
 final route = GpxRoute.parse(gpxBytes);
+final nextDevices = road.deviceUpdates.firstWhere((list) => list.isNotEmpty);
 await road.scan();
-final devices = await road.deviceUpdates.firstWhere((list) => list.isNotEmpty);
+final devices = await nextDevices;
 await road.connect(devices.first);
 road.start(route);
 road.samples.listen((sample) {
