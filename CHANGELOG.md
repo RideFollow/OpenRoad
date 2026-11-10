@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- `OpenRoad.pause()` now holds the virtual rider in place until `resume()`;
+  previously the route position kept advancing while paused.
+- `OpenRoad.stop()` ends the virtual ride while keeping the trainer connected.
+- `OpenRoad.connectionUpdates` and `OpenRoad.connected` report when the
+  trainer drops, so the host can pause and offer a reconnect.
+- `OpenRoad.bluetoothOn()` lets the host explain a switched-off adapter
+  instead of showing an empty scan.
+
 ## 0.3.0
 
 - Add 24-speed OpenRoad virtual gearing for fixed-sprocket and Zwift Cog setups.

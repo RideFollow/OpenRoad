@@ -44,20 +44,35 @@ class OpenRoad {
 
   final _devices = StreamController<List<IndoorTrainerDevice>>.broadcast();
   final _samples = StreamController<IndoorRideSample>.broadcast();
+  final _connection = StreamController<bool>.broadcast();
   Stream<List<IndoorTrainerDevice>> get deviceUpdates => _devices.stream;
   Stream<IndoorRideSample> get samples => _samples.stream;
+
+  /// Emits `false` when the connected trainer drops (out of range, powered
+  /// off, taken by another app) and `true` when a connection is established.
+  /// A host-initiated [disconnect] does not emit.
+  Stream<bool> get connectionUpdates => _connection.stream;
 
   final Map<String, IndoorTrainerDevice> _found = {};
   StreamSubscription<List<ScanResult>>? _scanSub;
   StreamSubscription<List<int>>? _dataSub;
+  StreamSubscription<BluetoothConnectionState>? _stateSub;
   BluetoothDevice? _device;
   BluetoothCharacteristic? _control;
   OpenRoadEngine? _engine;
   DateTime? _lastDataAt;
   double? _lastGrade;
   int _virtualGear = OpenRoadVirtualGearing.neutralGear;
+  bool _paused = false;
 
   int get virtualGear => _virtualGear;
+
+  /// Whether the virtual rider is held in place (see [pause]).
+  bool get paused => _paused;
+
+  /// Whether a trainer is currently connected.
+  bool get connected => _connected;
+  bool _connected = false;
 
   void setVirtualGear(int gear) {
     final next = OpenRoadVirtualGearing.clamp(gear);
@@ -69,6 +84,23 @@ class OpenRoad {
 
   void shiftUp() => setVirtualGear(_virtualGear + 1);
   void shiftDown() => setVirtualGear(_virtualGear - 1);
+
+  /// Whether Bluetooth is supported and switched on. Waits briefly for the
+  /// adapter to report its state (it is `unknown` right after launch).
+  static Future<bool> bluetoothOn() async {
+    if (!await FlutterBluePlus.isSupported) return false;
+    final state = await FlutterBluePlus.adapterState
+        .where((s) => s != BluetoothAdapterState.unknown)
+        .first
+        .timeout(
+          const Duration(seconds: 3),
+          onTimeout: () => BluetoothAdapterState.unknown,
+        );
+    // On Android an `off`/`unauthorized` adapter can't scan; treat unknown as
+    // "try anyway" so a slow adapter report never blocks a working scan.
+    return state == BluetoothAdapterState.on ||
+        state == BluetoothAdapterState.unknown;
+  }
 
   Future<void> scan({Duration timeout = const Duration(seconds: 8)}) async {
     _found.clear();
@@ -108,6 +140,16 @@ class OpenRoad {
     }
     _dataSub = bikeData.onValueReceived.listen(_onBikeData);
     await bikeData.setNotifyValue(true);
+    _stateSub = _device!.connectionState.listen((state) {
+      if (state == BluetoothConnectionState.disconnected) {
+        _lastDataAt = null;
+        _connected = false;
+        _connection.add(false);
+      } else if (state == BluetoothConnectionState.connected) {
+        _connected = true;
+        _connection.add(true);
+      }
+    });
     if (_control != null) {
       await _control!.setNotifyValue(true);
       await _control!.write([0x00]); // request control
@@ -123,18 +165,38 @@ class OpenRoad {
     _virtualGear = OpenRoadVirtualGearing.neutralGear;
     _lastDataAt = null;
     _lastGrade = null;
+    _paused = false;
   }
 
-  void pause() => _lastDataAt = null;
+  /// Hold the virtual rider in place. Trainer data keeps flowing as samples
+  /// (live power/cadence), but the route position does not advance until
+  /// [resume].
+  void pause() {
+    _paused = true;
+    _lastDataAt = null;
+  }
+
+  void resume() {
+    _paused = false;
+    _lastDataAt = null;
+  }
+
+  /// End the virtual ride. The trainer stays connected for the next one.
+  void stop() {
+    _engine = null;
+    _paused = false;
+    _lastDataAt = null;
+  }
 
   void _onBikeData(List<int> value) {
     final engine = _engine;
     if (engine == null) return;
     final bike = FtmsBikeData.parse(value);
     final now = DateTime.now();
-    final elapsed =
-        _lastDataAt == null ? Duration.zero : now.difference(_lastDataAt!);
-    _lastDataAt = now;
+    final elapsed = _paused || _lastDataAt == null
+        ? Duration.zero
+        : now.difference(_lastDataAt!);
+    _lastDataAt = _paused ? null : now;
     final frame = engine.advance(bike, elapsed);
     final trainerGrade = OpenRoadVirtualGearing.effectiveGrade(
       frame.position.gradePercent,
@@ -180,6 +242,9 @@ class OpenRoad {
   }
 
   Future<void> disconnect() async {
+    await _stateSub?.cancel();
+    _stateSub = null;
+    _connected = false;
     await _dataSub?.cancel();
     _dataSub = null;
     final device = _device;
@@ -193,6 +258,7 @@ class OpenRoad {
     await disconnect();
     await _devices.close();
     await _samples.close();
+    await _connection.close();
   }
 }
 
