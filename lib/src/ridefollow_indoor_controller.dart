@@ -4,13 +4,43 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import 'ftms.dart';
 import 'gpx_route.dart';
+import 'heart_rate.dart';
 import 'openroad_engine.dart';
+import 'zwift_click.dart';
 
 class IndoorTrainerDevice {
   const IndoorTrainerDevice(this.id, this.name, this._device);
   final String id;
   final String name;
   final BluetoothDevice _device;
+}
+
+/// A standard Bluetooth Heart Rate Service device, including Garmin watches in
+/// Broadcast Heart Rate mode and BLE chest straps.
+class HeartRateDevice {
+  const HeartRateDevice(this.id, this.name, this._device);
+  final String id;
+  final String name;
+  final BluetoothDevice _device;
+}
+
+/// One discoverable controller in a Zwift Click V2 pair.
+class ZwiftClickDevice {
+  const ZwiftClickDevice(this.id, this.name, this.side, this._device);
+  final String id;
+  final String name;
+  final ZwiftClickSide side;
+  final BluetoothDevice _device;
+}
+
+/// A connection-state edge for one Click V2 controller.
+class ZwiftClickConnectionEvent {
+  const ZwiftClickConnectionEvent({
+    required this.device,
+    required this.connected,
+  });
+  final ZwiftClickDevice device;
+  final bool connected;
 }
 
 class IndoorRideSample {
@@ -41,12 +71,43 @@ class OpenRoad {
   static final Guid _ftms = Guid('1826');
   static final Guid _bikeData = Guid('2ad2');
   static final Guid _controlPoint = Guid('2ad9');
+  static final Guid _heartRateService = Guid('180d');
+  static final Guid _heartRateMeasurement = Guid('2a37');
+  static final Guid _clickService = Guid(
+    '00000001-19ca-4651-86e5-fa29dcdd09d1',
+  );
+  static final Guid _clickAsync = Guid(
+    '00000002-19ca-4651-86e5-fa29dcdd09d1',
+  );
+  static final Guid _clickSyncRx = Guid(
+    '00000003-19ca-4651-86e5-fa29dcdd09d1',
+  );
+  static final Guid _clickSyncTx = Guid(
+    '00000004-19ca-4651-86e5-fa29dcdd09d1',
+  );
 
   final _devices = StreamController<List<IndoorTrainerDevice>>.broadcast();
   final _samples = StreamController<IndoorRideSample>.broadcast();
   final _connection = StreamController<bool>.broadcast();
+  final _heartRateDevices = StreamController<List<HeartRateDevice>>.broadcast();
+  final _heartRate = StreamController<int>.broadcast();
+  final _heartRateConnection = StreamController<bool>.broadcast();
+  final _clickDevices = StreamController<List<ZwiftClickDevice>>.broadcast();
+  final _clickButtons = StreamController<ZwiftClickButtonEvent>.broadcast();
+  final _clickConnections =
+      StreamController<ZwiftClickConnectionEvent>.broadcast();
   Stream<List<IndoorTrainerDevice>> get deviceUpdates => _devices.stream;
   Stream<IndoorRideSample> get samples => _samples.stream;
+  Stream<List<HeartRateDevice>> get heartRateDeviceUpdates =>
+      _heartRateDevices.stream;
+  Stream<int> get heartRateUpdates => _heartRate.stream;
+  Stream<bool> get heartRateConnectionUpdates => _heartRateConnection.stream;
+  Stream<List<ZwiftClickDevice>> get controllerDeviceUpdates =>
+      _clickDevices.stream;
+  Stream<ZwiftClickButtonEvent> get controllerButtonUpdates =>
+      _clickButtons.stream;
+  Stream<ZwiftClickConnectionEvent> get controllerConnectionUpdates =>
+      _clickConnections.stream;
 
   /// Emits `false` when the connected trainer drops (out of range, powered
   /// off, taken by another app) and `true` when a connection is established.
@@ -54,10 +115,27 @@ class OpenRoad {
   Stream<bool> get connectionUpdates => _connection.stream;
 
   final Map<String, IndoorTrainerDevice> _found = {};
+  final Map<String, HeartRateDevice> _heartRateFound = {};
+  final Map<String, ZwiftClickDevice> _clickFound = {};
   StreamSubscription<List<ScanResult>>? _scanSub;
+  StreamSubscription<List<ScanResult>>? _heartRateScanSub;
+  StreamSubscription<List<ScanResult>>? _clickScanSub;
   StreamSubscription<List<int>>? _dataSub;
   StreamSubscription<BluetoothConnectionState>? _stateSub;
+  StreamSubscription<List<int>>? _heartRateDataSub;
+  StreamSubscription<BluetoothConnectionState>? _heartRateStateSub;
   BluetoothDevice? _device;
+  BluetoothDevice? _heartRateDevice;
+  final Map<String, ZwiftClickDevice> _connectedClickDevices = {};
+  final Map<String, BluetoothCharacteristic> _clickWrites = {};
+  final Map<String, StreamSubscription<List<int>>> _clickButtonSubs = {};
+  final Map<String, StreamSubscription<List<int>>> _clickSyncSubs = {};
+  final Map<String, StreamSubscription<BluetoothConnectionState>>
+      _clickStateSubs = {};
+  final Map<String, Timer> _clickKeepalives = {};
+  final Map<String, int> _clickPreviousBitmaps = {};
+  final Map<String, Set<ZwiftClickButton>> _clickHeldByDevice = {};
+  final Map<ZwiftClickButton, int> _clickHeldCounts = {};
   BluetoothCharacteristic? _control;
   OpenRoadEngine? _engine;
   DateTime? _lastDataAt;
@@ -73,6 +151,11 @@ class OpenRoad {
   /// Whether a trainer is currently connected.
   bool get connected => _connected;
   bool _connected = false;
+  bool get heartRateConnected => _heartRateConnected;
+  bool _heartRateConnected = false;
+  bool get controllersConnected => _connectedClickDevices.isNotEmpty;
+  Set<String> get connectedControllerIds =>
+      Set.unmodifiable(_connectedClickDevices.keys);
 
   void setVirtualGear(int gear) {
     final next = OpenRoadVirtualGearing.clamp(gear);
@@ -104,7 +187,12 @@ class OpenRoad {
 
   Future<void> scan({Duration timeout = const Duration(seconds: 8)}) async {
     _found.clear();
+    await FlutterBluePlus.stopScan();
     await _scanSub?.cancel();
+    await _heartRateScanSub?.cancel();
+    await _clickScanSub?.cancel();
+    _heartRateScanSub = null;
+    _clickScanSub = null;
     _scanSub = FlutterBluePlus.scanResults.listen((results) {
       for (final result in results) {
         final advertised = result.advertisementData.serviceUuids;
@@ -123,6 +211,88 @@ class OpenRoad {
     await FlutterBluePlus.startScan(withServices: [_ftms], timeout: timeout);
   }
 
+  /// Find Garmin watches in Broadcast Heart Rate mode and other standard BLE
+  /// heart-rate sensors. This is separate from trainer discovery so either can
+  /// be refreshed without changing an established connection.
+  Future<void> scanHeartRateMonitors({
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    _heartRateFound.clear();
+    await FlutterBluePlus.stopScan();
+    await _heartRateScanSub?.cancel();
+    await _scanSub?.cancel();
+    await _clickScanSub?.cancel();
+    _scanSub = null;
+    _clickScanSub = null;
+    _heartRateScanSub = FlutterBluePlus.scanResults.listen((results) {
+      for (final result in results) {
+        if (!result.advertisementData.serviceUuids.contains(
+          _heartRateService,
+        )) {
+          continue;
+        }
+        final name = result.advertisementData.advName.isNotEmpty
+            ? result.advertisementData.advName
+            : result.device.platformName;
+        _heartRateFound[result.device.remoteId.str] = HeartRateDevice(
+          result.device.remoteId.str,
+          name.isEmpty ? 'Heart-rate monitor' : name,
+          result.device,
+        );
+      }
+      _heartRateDevices.add(List.unmodifiable(_heartRateFound.values));
+    });
+    await FlutterBluePlus.startScan(
+      withServices: [_heartRateService],
+      timeout: timeout,
+    );
+  }
+
+  /// Find the left and right pods in a Zwift Click V2 pair.
+  ///
+  /// Press any controller button before scanning so sleeping pods advertise.
+  Future<void> scanControllers({
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    _clickFound.clear();
+    await FlutterBluePlus.stopScan();
+    await _clickScanSub?.cancel();
+    await _scanSub?.cancel();
+    await _heartRateScanSub?.cancel();
+    _scanSub = null;
+    _heartRateScanSub = null;
+    _clickScanSub = FlutterBluePlus.scanResults.listen((results) {
+      for (final result in results) {
+        final advertisement = result.advertisementData;
+        final manufacturer =
+            advertisement.manufacturerData[ZwiftClickProtocol.companyId];
+        final name = advertisement.advName.isNotEmpty
+            ? advertisement.advName
+            : result.device.platformName;
+        final side = ZwiftClickProtocol.sideFromManufacturerData(manufacturer);
+        final isClick = side != ZwiftClickSide.unknown ||
+            name.toLowerCase().contains('click');
+        if (!isClick) continue;
+        final sideName = switch (side) {
+          ZwiftClickSide.left => 'Left',
+          ZwiftClickSide.right => 'Right',
+          ZwiftClickSide.unknown => 'Controller',
+        };
+        final displayName = name.isEmpty ? 'Zwift Click V2 · $sideName' : name;
+        _clickFound[result.device.remoteId.str] = ZwiftClickDevice(
+          result.device.remoteId.str,
+          displayName,
+          side,
+          result.device,
+        );
+      }
+      _clickDevices.add(List.unmodifiable(_clickFound.values));
+    });
+    // Some controller firmware omits the custom service from advertisements,
+    // so scan broadly and filter by Zwift's company ID/name as a fallback.
+    await FlutterBluePlus.startScan(timeout: timeout);
+  }
+
   Future<void> connect(IndoorTrainerDevice selected) async {
     await disconnect();
     // The D100 and many budget FTMS trainers expose only one Bluetooth link.
@@ -131,6 +301,10 @@ class OpenRoad {
     await FlutterBluePlus.stopScan();
     await _scanSub?.cancel();
     _scanSub = null;
+    await _clickScanSub?.cancel();
+    _clickScanSub = null;
+    await _heartRateScanSub?.cancel();
+    _heartRateScanSub = null;
     _device = selected._device;
     try {
       await _device!.connect(timeout: const Duration(seconds: 12));
@@ -168,6 +342,177 @@ class OpenRoad {
       await disconnect();
       rethrow;
     }
+  }
+
+  Future<void> connectHeartRate(HeartRateDevice selected) async {
+    await disconnectHeartRate();
+    await FlutterBluePlus.stopScan();
+    await _heartRateScanSub?.cancel();
+    _heartRateScanSub = null;
+    await _scanSub?.cancel();
+    _scanSub = null;
+    await _clickScanSub?.cancel();
+    _clickScanSub = null;
+    _heartRateDevice = selected._device;
+    try {
+      await _heartRateDevice!.connect(timeout: const Duration(seconds: 12));
+      final services = await _heartRateDevice!.discoverServices();
+      BluetoothCharacteristic? measurement;
+      for (final service in services.where(
+        (s) => s.uuid == _heartRateService,
+      )) {
+        for (final characteristic in service.characteristics) {
+          if (characteristic.uuid == _heartRateMeasurement) {
+            measurement = characteristic;
+          }
+        }
+      }
+      if (measurement == null) {
+        throw StateError('Device does not expose Heart Rate Measurement');
+      }
+      _heartRateDataSub = measurement.onValueReceived.listen((value) {
+        final bpm = HeartRateMeasurement.parse(value);
+        if (bpm != null) _heartRate.add(bpm);
+      });
+      await measurement.setNotifyValue(true);
+      _heartRateStateSub = _heartRateDevice!.connectionState.listen((state) {
+        final connected = state == BluetoothConnectionState.connected;
+        if (connected == _heartRateConnected) return;
+        _heartRateConnected = connected;
+        _heartRateConnection.add(connected);
+      });
+      _heartRateConnected = true;
+      _heartRateConnection.add(true);
+    } catch (_) {
+      await disconnectHeartRate();
+      rethrow;
+    }
+  }
+
+  /// Connect one pod from a Zwift Click V2 pair. Call once for each discovered
+  /// pod; existing trainer and heart-rate connections remain untouched.
+  Future<void> connectController(ZwiftClickDevice selected) async {
+    if (_connectedClickDevices.containsKey(selected.id)) return;
+    await FlutterBluePlus.stopScan();
+    await _clickScanSub?.cancel();
+    _clickScanSub = null;
+    final device = selected._device;
+    try {
+      await device.connect(timeout: const Duration(seconds: 12));
+      final services = await device.discoverServices();
+      BluetoothCharacteristic? asyncButtons;
+      BluetoothCharacteristic? syncRx;
+      BluetoothCharacteristic? syncTx;
+      for (final service in services.where((s) => s.uuid == _clickService)) {
+        for (final characteristic in service.characteristics) {
+          if (characteristic.uuid == _clickAsync) asyncButtons = characteristic;
+          if (characteristic.uuid == _clickSyncRx) syncRx = characteristic;
+          if (characteristic.uuid == _clickSyncTx) syncTx = characteristic;
+        }
+      }
+      if (asyncButtons == null || syncRx == null || syncTx == null) {
+        throw StateError('Controller does not expose the Click V2 service');
+      }
+
+      _connectedClickDevices[selected.id] = selected;
+      _clickWrites[selected.id] = syncRx;
+      _clickPreviousBitmaps[selected.id] = 0xffffffff;
+      _clickHeldByDevice[selected.id] = <ZwiftClickButton>{};
+      _clickButtonSubs[selected.id] = asyncButtons.onValueReceived.listen(
+        (value) => _onControllerFrame(selected.id, value),
+      );
+      _clickSyncSubs[selected.id] = syncTx.onValueReceived.listen((value) {
+        if (value.length >= 2 && value[0] == 0xff && value[1] == 0x03) {
+          // Empty acknowledgement keeps already-unlocked pods streaming. It
+          // cannot manufacture Zwift's server-signed left-pod unlock.
+          unawaited(
+            _writeClick(syncRx!, ZwiftClickProtocol.challengeAck).catchError(
+              (Object _) {},
+            ),
+          );
+        }
+      });
+      _clickStateSubs[selected.id] = device.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.disconnected) {
+          unawaited(_controllerDropped(selected.id));
+        }
+      });
+      await asyncButtons.setNotifyValue(true);
+      await syncTx.setNotifyValue(true);
+
+      await _writeClick(syncRx, ZwiftClickProtocol.activate);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await _writeClick(syncRx, ZwiftClickProtocol.setupOne);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await _writeClick(syncRx, ZwiftClickProtocol.setupTwo);
+
+      _clickKeepalives[selected.id] = Timer.periodic(
+        const Duration(seconds: 3),
+        (_) => unawaited(_keepControllerAlive(selected.id)),
+      );
+      _clickConnections.add(
+        ZwiftClickConnectionEvent(device: selected, connected: true),
+      );
+    } catch (_) {
+      if (_connectedClickDevices.containsKey(selected.id)) {
+        await disconnectController(selected.id);
+      } else {
+        await device.disconnect();
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _writeClick(
+    BluetoothCharacteristic characteristic,
+    List<int> value,
+  ) {
+    final properties = characteristic.properties;
+    return characteristic.write(
+      value,
+      withoutResponse: !properties.write && properties.writeWithoutResponse,
+    );
+  }
+
+  Future<void> _keepControllerAlive(String id) async {
+    final write = _clickWrites[id];
+    if (write == null) return;
+    try {
+      await _writeClick(write, ZwiftClickProtocol.rideOn);
+    } catch (_) {
+      await _controllerDropped(id);
+    }
+  }
+
+  void _onControllerFrame(String id, List<int> frame) {
+    final current = ZwiftClickProtocol.decodeBitmap(frame);
+    if (current == null) return;
+    final previous = _clickPreviousBitmaps[id] ?? 0xffffffff;
+    _clickPreviousBitmaps[id] = current;
+    final held = _clickHeldByDevice[id];
+    if (held == null) return;
+    for (final event in ZwiftClickProtocol.transitions(previous, current)) {
+      if (event.pressed) {
+        if (!held.add(event.button)) continue;
+        final count = (_clickHeldCounts[event.button] ?? 0) + 1;
+        _clickHeldCounts[event.button] = count;
+        // The pair mirrors each edge. Emit only the first press observed.
+        if (count == 1) _clickButtons.add(event);
+      } else {
+        if (!held.remove(event.button)) continue;
+        final count = (_clickHeldCounts[event.button] ?? 1) - 1;
+        if (count <= 0) {
+          _clickHeldCounts.remove(event.button);
+          _clickButtons.add(event);
+        } else {
+          _clickHeldCounts[event.button] = count;
+        }
+      }
+    }
+  }
+
+  Future<void> _controllerDropped(String id) async {
+    await _tearDownController(id, disconnectDevice: false);
   }
 
   void start(
@@ -215,17 +560,19 @@ class OpenRoad {
       frame.position.gradePercent,
       _virtualGear,
     );
-    _samples.add(IndoorRideSample(
-      position: frame.position,
-      speedKmh: frame.virtualSpeedKmh,
-      trainerSpeedKmh: frame.trainerSpeedKmh,
-      cadenceRpm: frame.cadenceRpm,
-      powerWatts: frame.powerWatts,
-      heartRateBpm: frame.heartRateBpm,
-      resistanceLevel: frame.resistanceLevel,
-      virtualGear: _virtualGear,
-      trainerGradePercent: trainerGrade,
-    ));
+    _samples.add(
+      IndoorRideSample(
+        position: frame.position,
+        speedKmh: frame.virtualSpeedKmh,
+        trainerSpeedKmh: frame.trainerSpeedKmh,
+        cadenceRpm: frame.cadenceRpm,
+        powerWatts: frame.powerWatts,
+        heartRateBpm: frame.heartRateBpm,
+        resistanceLevel: frame.resistanceLevel,
+        virtualGear: _virtualGear,
+        trainerGradePercent: trainerGrade,
+      ),
+    );
     if (_control != null &&
         (_lastGrade == null || (trainerGrade - _lastGrade!).abs() >= 0.2)) {
       _applyTrainerSimulation();
@@ -266,12 +613,75 @@ class OpenRoad {
     if (device != null) await device.disconnect();
   }
 
+  Future<void> disconnectHeartRate() async {
+    await _heartRateStateSub?.cancel();
+    _heartRateStateSub = null;
+    _heartRateConnected = false;
+    await _heartRateDataSub?.cancel();
+    _heartRateDataSub = null;
+    final device = _heartRateDevice;
+    _heartRateDevice = null;
+    if (device != null) await device.disconnect();
+  }
+
+  /// Disconnect one Click V2 pod and release any button it still reported as
+  /// held, preventing a mirrored edge from remaining stuck.
+  Future<void> disconnectController(String id) =>
+      _tearDownController(id, disconnectDevice: true);
+
+  Future<void> disconnectControllers() async {
+    for (final id in List<String>.of(_connectedClickDevices.keys)) {
+      await disconnectController(id);
+    }
+  }
+
+  Future<void> _tearDownController(
+    String id, {
+    required bool disconnectDevice,
+  }) async {
+    final selected = _connectedClickDevices.remove(id);
+    if (selected == null) return;
+    _clickKeepalives.remove(id)?.cancel();
+    await _clickButtonSubs.remove(id)?.cancel();
+    await _clickSyncSubs.remove(id)?.cancel();
+    await _clickStateSubs.remove(id)?.cancel();
+    _clickWrites.remove(id);
+    _clickPreviousBitmaps.remove(id);
+
+    final held = _clickHeldByDevice.remove(id) ?? const <ZwiftClickButton>{};
+    for (final button in held) {
+      final count = (_clickHeldCounts[button] ?? 1) - 1;
+      if (count <= 0) {
+        _clickHeldCounts.remove(button);
+        _clickButtons.add(
+          ZwiftClickButtonEvent(button: button, pressed: false),
+        );
+      } else {
+        _clickHeldCounts[button] = count;
+      }
+    }
+    _clickConnections.add(
+      ZwiftClickConnectionEvent(device: selected, connected: false),
+    );
+    if (disconnectDevice) await selected._device.disconnect();
+  }
+
   Future<void> dispose() async {
     await _scanSub?.cancel();
+    await _heartRateScanSub?.cancel();
+    await _clickScanSub?.cancel();
     await disconnect();
+    await disconnectHeartRate();
+    await disconnectControllers();
     await _devices.close();
     await _samples.close();
     await _connection.close();
+    await _heartRateDevices.close();
+    await _heartRate.close();
+    await _heartRateConnection.close();
+    await _clickDevices.close();
+    await _clickButtons.close();
+    await _clickConnections.close();
   }
 }
 
