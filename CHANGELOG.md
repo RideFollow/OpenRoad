@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- Stop active Bluetooth discovery before connecting to improve reliability on
+  single-link trainers such as the Van Rysel D100.
+- Disconnect cleanly after a failed FTMS setup so the trainer's Bluetooth slot
+  is immediately available for a retry.
+
 ## 0.4.0
 
 - `OpenRoad.pause()` now holds the virtual rider in place until `resume()`;

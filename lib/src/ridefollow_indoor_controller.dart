@@ -125,35 +125,48 @@ class OpenRoad {
 
   Future<void> connect(IndoorTrainerDevice selected) async {
     await disconnect();
+    // The D100 and many budget FTMS trainers expose only one Bluetooth link.
+    // Stop discovery before connecting so iOS is not still scanning while it
+    // negotiates that single link.
+    await FlutterBluePlus.stopScan();
+    await _scanSub?.cancel();
+    _scanSub = null;
     _device = selected._device;
-    await _device!.connect(timeout: const Duration(seconds: 12));
-    final services = await _device!.discoverServices();
-    BluetoothCharacteristic? bikeData;
-    for (final service in services.where((s) => s.uuid == _ftms)) {
-      for (final characteristic in service.characteristics) {
-        if (characteristic.uuid == _bikeData) bikeData = characteristic;
-        if (characteristic.uuid == _controlPoint) _control = characteristic;
+    try {
+      await _device!.connect(timeout: const Duration(seconds: 12));
+      final services = await _device!.discoverServices();
+      BluetoothCharacteristic? bikeData;
+      for (final service in services.where((s) => s.uuid == _ftms)) {
+        for (final characteristic in service.characteristics) {
+          if (characteristic.uuid == _bikeData) bikeData = characteristic;
+          if (characteristic.uuid == _controlPoint) _control = characteristic;
+        }
       }
-    }
-    if (bikeData == null) {
-      throw StateError('Trainer does not expose FTMS Indoor Bike Data');
-    }
-    _dataSub = bikeData.onValueReceived.listen(_onBikeData);
-    await bikeData.setNotifyValue(true);
-    _stateSub = _device!.connectionState.listen((state) {
-      if (state == BluetoothConnectionState.disconnected) {
-        _lastDataAt = null;
-        _connected = false;
-        _connection.add(false);
-      } else if (state == BluetoothConnectionState.connected) {
-        _connected = true;
-        _connection.add(true);
+      if (bikeData == null) {
+        throw StateError('Trainer does not expose FTMS Indoor Bike Data');
       }
-    });
-    if (_control != null) {
-      await _control!.setNotifyValue(true);
-      await _control!.write([0x00]); // request control
-      await _control!.write([0x07]); // start/resume
+      _dataSub = bikeData.onValueReceived.listen(_onBikeData);
+      await bikeData.setNotifyValue(true);
+      _stateSub = _device!.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.disconnected) {
+          _lastDataAt = null;
+          _connected = false;
+          _connection.add(false);
+        } else if (state == BluetoothConnectionState.connected) {
+          _connected = true;
+          _connection.add(true);
+        }
+      });
+      if (_control != null) {
+        await _control!.setNotifyValue(true);
+        await _control!.write([0x00]); // request control
+        await _control!.write([0x07]); // start/resume
+      }
+    } catch (_) {
+      // Do not leave a half-connected peripheral holding the trainer's only
+      // Bluetooth slot after service discovery or control negotiation fails.
+      await disconnect();
+      rethrow;
     }
   }
 
