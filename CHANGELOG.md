@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.0
+
+- Discover and connect both controllers in a Zwift Click V2 pair.
+- Decode button edges, deduplicate the pair's mirrored frames, and expose a
+  host-neutral controller event stream.
+- Keep FTMS trainer, heart-rate, and Click V2 connections independent so a host
+  can use all three accessories during the same ride.
+- Release held buttons and disconnect every controller explicitly at ride end.
+
+## 0.5.0
+
+- Discover and connect standard Bluetooth Heart Rate Service devices,
+  including Garmin watches in Broadcast Heart Rate mode and BLE straps.
+- Decode both 8-bit and 16-bit Heart Rate Measurement packets.
+- Expose heart-rate device, value, connection, and disconnect streams to host
+  applications independently of the FTMS trainer connection.
+
 ## 0.4.1
 
 - Stop active Bluetooth discovery before connecting to improve reliability on
