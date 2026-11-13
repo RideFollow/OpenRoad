@@ -57,6 +57,19 @@ void main() {
       const Duration(seconds: 1),
     );
     expect(frame.virtualSpeedKmh, 24);
+    expect(frame.powerWatts, isNull);
+  });
+
+  test('distinguishes a measured zero watts from unavailable power', () {
+    final engine = OpenRoadEngine(route: routeWithClimb(0));
+    final frame = engine.advance(
+      const FtmsBikeData(powerWatts: 0, speedKmh: 24),
+      const Duration(seconds: 1),
+    );
+    expect(frame.powerWatts, 0);
+    // A real zero-power reading follows the physics model instead of the
+    // trainer-speed fallback used when the field is absent.
+    expect(frame.virtualSpeedKmh, isNot(24));
   });
 
   test('24-speed virtual gearing adjusts trainer grade and clamps', () {

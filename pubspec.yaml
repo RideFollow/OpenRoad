@@ -1,6 +1,6 @@
 name: ridefollow_indoor
 description: Open-source GPX-powered Bluetooth FTMS indoor cycling engine.
-version: 0.6.0
+version: 0.6.1
 repository: https://github.com/RideFollow/OpenRoad
 license: MIT
 environment:
