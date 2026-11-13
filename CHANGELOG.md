@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1
+
+- Preserve the distinction between an unavailable FTMS power field and a real
+  zero-watt/coasting measurement in `OpenRoadFrame` and ride samples.
+
 ## 0.6.0
 
 - Discover and connect both controllers in a Zwift Click V2 pair.

@@ -72,7 +72,15 @@ class OpenRoadFrame {
   final RoutePosition position;
   final double virtualSpeedKmh;
   final double? trainerSpeedKmh;
-  final int powerWatts;
+
+  /// Instantaneous power reported by the trainer.
+  ///
+  /// `null` means the FTMS payload did not contain a power field. This is
+  /// deliberately different from `0`, which is a valid measurement while the
+  /// rider is coasting. OpenRoad can still advance from trainer speed when
+  /// power is unavailable, but consumers must not present that fallback as a
+  /// measured zero-watt effort.
+  final int? powerWatts;
   final double? cadenceRpm;
   final int? heartRateBpm;
   final double? resistanceLevel;
@@ -119,7 +127,7 @@ class OpenRoadEngine {
       position: position,
       virtualSpeedKmh: virtualSpeedKmh,
       trainerSpeedKmh: trainer.speedKmh,
-      powerWatts: power,
+      powerWatts: trainer.powerWatts == null ? null : power,
       cadenceRpm: trainer.cadenceRpm,
       heartRateBpm: trainer.heartRateBpm,
       resistanceLevel: trainer.resistanceLevel,
