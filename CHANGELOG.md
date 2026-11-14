@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.2
+
+- Make Click V2 setup resilient across iOS and other Bluetooth stacks by
+  finding characteristics across all discovered services, treating sync-tx as
+  optional, and preferring write-without-response for the activation sequence.
+- Handle the controller's `0xFF 0x03` challenge on the async characteristic,
+  where Click V2 hardware actually sends it.
+- Report the exact failing connection stage to host applications.
+
 ## 0.6.1
 
 - Preserve the distinction between an unavailable FTMS power field and a real

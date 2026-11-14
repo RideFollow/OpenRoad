@@ -58,6 +58,15 @@ void main() {
       );
       expect(events.every((event) => event.pressed), isTrue);
     });
+
+    test('connection errors identify the failing setup stage', () {
+      const error = ZwiftClickConnectionException(
+        ZwiftClickConnectionStage.notifications,
+        'notifications unavailable',
+      );
+      expect(error.stageLabel, 'controller notifications');
+      expect(error.toString(), contains('notifications unavailable'));
+    });
   });
 }
 
