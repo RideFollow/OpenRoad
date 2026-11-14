@@ -43,6 +43,34 @@ class ZwiftClickConnectionEvent {
   final bool connected;
 }
 
+/// The phase that failed while opening a Click V2 controller session.
+enum ZwiftClickConnectionStage {
+  bluetooth,
+  services,
+  characteristics,
+  notifications,
+  handshake,
+}
+
+/// A diagnostic error that lets host apps explain a failed Click V2 setup.
+class ZwiftClickConnectionException implements Exception {
+  const ZwiftClickConnectionException(this.stage, this.cause);
+
+  final ZwiftClickConnectionStage stage;
+  final Object cause;
+
+  String get stageLabel => switch (stage) {
+        ZwiftClickConnectionStage.bluetooth => 'Bluetooth connection',
+        ZwiftClickConnectionStage.services => 'service discovery',
+        ZwiftClickConnectionStage.characteristics => 'Click service discovery',
+        ZwiftClickConnectionStage.notifications => 'controller notifications',
+        ZwiftClickConnectionStage.handshake => 'controller handshake',
+      };
+
+  @override
+  String toString() => 'Click V2 $stageLabel failed: $cause';
+}
+
 class IndoorRideSample {
   const IndoorRideSample({
     required this.position,
@@ -73,18 +101,9 @@ class OpenRoad {
   static final Guid _controlPoint = Guid('2ad9');
   static final Guid _heartRateService = Guid('180d');
   static final Guid _heartRateMeasurement = Guid('2a37');
-  static final Guid _clickService = Guid(
-    '00000001-19ca-4651-86e5-fa29dcdd09d1',
-  );
-  static final Guid _clickAsync = Guid(
-    '00000002-19ca-4651-86e5-fa29dcdd09d1',
-  );
-  static final Guid _clickSyncRx = Guid(
-    '00000003-19ca-4651-86e5-fa29dcdd09d1',
-  );
-  static final Guid _clickSyncTx = Guid(
-    '00000004-19ca-4651-86e5-fa29dcdd09d1',
-  );
+  static final Guid _clickAsync = Guid('00000002-19ca-4651-86e5-fa29dcdd09d1');
+  static final Guid _clickSyncRx = Guid('00000003-19ca-4651-86e5-fa29dcdd09d1');
+  static final Guid _clickSyncTx = Guid('00000004-19ca-4651-86e5-fa29dcdd09d1');
 
   final _devices = StreamController<List<IndoorTrainerDevice>>.broadcast();
   final _samples = StreamController<IndoorRideSample>.broadcast();
@@ -397,20 +416,27 @@ class OpenRoad {
     await _clickScanSub?.cancel();
     _clickScanSub = null;
     final device = selected._device;
+    var stage = ZwiftClickConnectionStage.bluetooth;
     try {
       await device.connect(timeout: const Duration(seconds: 12));
+      stage = ZwiftClickConnectionStage.services;
       final services = await device.discoverServices();
       BluetoothCharacteristic? asyncButtons;
       BluetoothCharacteristic? syncRx;
       BluetoothCharacteristic? syncTx;
-      for (final service in services.where((s) => s.uuid == _clickService)) {
+      stage = ZwiftClickConnectionStage.characteristics;
+      // Match the characteristic UUIDs across every service. Some Bluetooth
+      // stacks briefly return the proprietary service with a stale or partial
+      // service identity after reconnecting a pod, while the characteristics
+      // themselves are already available.
+      for (final service in services) {
         for (final characteristic in service.characteristics) {
           if (characteristic.uuid == _clickAsync) asyncButtons = characteristic;
           if (characteristic.uuid == _clickSyncRx) syncRx = characteristic;
           if (characteristic.uuid == _clickSyncTx) syncTx = characteristic;
         }
       }
-      if (asyncButtons == null || syncRx == null || syncTx == null) {
+      if (asyncButtons == null || syncRx == null) {
         throw StateError('Controller does not expose the Click V2 service');
       }
 
@@ -418,28 +444,44 @@ class OpenRoad {
       _clickWrites[selected.id] = syncRx;
       _clickPreviousBitmaps[selected.id] = 0xffffffff;
       _clickHeldByDevice[selected.id] = <ZwiftClickButton>{};
-      _clickButtonSubs[selected.id] = asyncButtons.onValueReceived.listen(
-        (value) => _onControllerFrame(selected.id, value),
-      );
-      _clickSyncSubs[selected.id] = syncTx.onValueReceived.listen((value) {
+      _clickButtonSubs[selected.id] = asyncButtons.onValueReceived.listen((
+        value,
+      ) {
+        // Click V2 sends its 0xff 0x03 unlock challenge on the async
+        // characteristic, alongside button frames. It does not arrive on
+        // sync-tx. The empty acknowledgement preserves an unlock previously
+        // granted by Zwift and is harmless on the always-available right pod.
         if (value.length >= 2 && value[0] == 0xff && value[1] == 0x03) {
-          // Empty acknowledgement keeps already-unlocked pods streaming. It
-          // cannot manufacture Zwift's server-signed left-pod unlock.
           unawaited(
-            _writeClick(syncRx!, ZwiftClickProtocol.challengeAck).catchError(
-              (Object _) {},
-            ),
+            _writeClick(
+              syncRx!,
+              ZwiftClickProtocol.challengeAck,
+            ).catchError((Object _) {}),
           );
         }
+        _onControllerFrame(selected.id, value);
       });
+      if (syncTx != null) {
+        _clickSyncSubs[selected.id] = syncTx.onValueReceived.listen((_) {});
+      }
       _clickStateSubs[selected.id] = device.connectionState.listen((state) {
         if (state == BluetoothConnectionState.disconnected) {
           unawaited(_controllerDropped(selected.id));
         }
       });
+      stage = ZwiftClickConnectionStage.notifications;
       await asyncButtons.setNotifyValue(true);
-      await syncTx.setNotifyValue(true);
+      // sync-tx only carries the optional RideOn echo. Missing or unsupported
+      // indications must not prevent buttons on the async characteristic.
+      if (syncTx != null) {
+        try {
+          await syncTx.setNotifyValue(true);
+        } catch (_) {
+          await _clickSyncSubs.remove(selected.id)?.cancel();
+        }
+      }
 
+      stage = ZwiftClickConnectionStage.handshake;
       await _writeClick(syncRx, ZwiftClickProtocol.activate);
       await Future<void>.delayed(const Duration(milliseconds: 100));
       await _writeClick(syncRx, ZwiftClickProtocol.setupOne);
@@ -453,24 +495,38 @@ class OpenRoad {
       _clickConnections.add(
         ZwiftClickConnectionEvent(device: selected, connected: true),
       );
-    } catch (_) {
+    } catch (error) {
       if (_connectedClickDevices.containsKey(selected.id)) {
         await disconnectController(selected.id);
       } else {
         await device.disconnect();
       }
-      rethrow;
+      if (error is ZwiftClickConnectionException) rethrow;
+      throw ZwiftClickConnectionException(stage, error);
     }
   }
 
   Future<void> _writeClick(
     BluetoothCharacteristic characteristic,
     List<int> value,
-  ) {
+  ) async {
     final properties = characteristic.properties;
-    return characteristic.write(
-      value,
-      withoutResponse: !properties.write && properties.writeWithoutResponse,
+    Object? withoutResponseError;
+    if (properties.writeWithoutResponse) {
+      try {
+        await characteristic.write(value, withoutResponse: true);
+        return;
+      } catch (error) {
+        withoutResponseError = error;
+      }
+    }
+    if (properties.write) {
+      await characteristic.write(value, withoutResponse: false);
+      return;
+    }
+    throw StateError(
+      'Click V2 sync-rx is not writable'
+      '${withoutResponseError == null ? '' : ': $withoutResponseError'}',
     );
   }
 
