@@ -73,6 +73,7 @@ class ZwiftClickConnectionException implements Exception {
 
 class IndoorRideSample {
   const IndoorRideSample({
+    this.openTraining = false,
     required this.position,
     required this.speedKmh,
     this.trainerSpeedKmh,
@@ -83,6 +84,7 @@ class IndoorRideSample {
     required this.virtualGear,
     required this.trainerGradePercent,
   });
+  final bool openTraining;
   final RoutePosition position;
   final double speedKmh;
   final double? trainerSpeedKmh;
@@ -582,6 +584,17 @@ class OpenRoad {
     _paused = false;
   }
 
+  /// Start an unlimited flat-road effort; gearing still changes FTMS load.
+  void startOpenTraining(
+      {OpenRoadParameters parameters = const OpenRoadParameters()}) {
+    _engine = OpenRoadEngine.open(parameters: parameters);
+    _virtualGear = OpenRoadVirtualGearing.neutralGear;
+    _lastDataAt = null;
+    _lastGrade = null;
+    _paused = false;
+    _applyTrainerSimulation();
+  }
+
   /// Hold the virtual rider in place. Trainer data keeps flowing as samples
   /// (live power/cadence), but the route position does not advance until
   /// [resume].
@@ -618,6 +631,7 @@ class OpenRoad {
     );
     _samples.add(
       IndoorRideSample(
+        openTraining: engine.openTraining,
         position: frame.position,
         speedKmh: frame.virtualSpeedKmh,
         trainerSpeedKmh: frame.trainerSpeedKmh,

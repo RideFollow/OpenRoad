@@ -11,6 +11,25 @@ GpxRoute routeWithClimb(double elevationGain) => GpxRoute.parse(utf8.encode('''
 '''));
 
 void main() {
+  test('open training advances indefinitely without a route or finish target',
+      () {
+    final engine = OpenRoadEngine.open();
+    for (var i = 0; i < 7200; i++) {
+      engine.advance(
+          const FtmsBikeData(speedKmh: 30), const Duration(seconds: 1));
+    }
+    expect(engine.route, isNull);
+    expect(engine.distanceKm, closeTo(60, .001));
+    expect(engine.finished, isFalse);
+    expect(engine.position.progress, 0);
+    expect(engine.position.gradePercent, 0);
+    final before = engine.distanceKm;
+    engine.advance(const FtmsBikeData(speedKmh: 30), Duration.zero);
+    expect(engine.distanceKm, before);
+    expect(OpenRoadVirtualGearing.effectiveGrade(0, 13), greaterThan(0));
+    expect(OpenRoadVirtualGearing.effectiveGrade(0, 11), lessThan(0));
+  });
+
   test('moves along a GPX route using power and rider parameters', () {
     final engine = OpenRoadEngine(
       route: routeWithClimb(0),

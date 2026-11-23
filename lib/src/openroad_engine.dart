@@ -94,7 +94,11 @@ class OpenRoadEngine {
   OpenRoadEngine(
       {required this.route, this.parameters = const OpenRoadParameters()});
 
-  final GpxRoute route;
+  OpenRoadEngine.open({this.parameters = const OpenRoadParameters()})
+      : route = null;
+
+  final GpxRoute? route;
+  bool get openTraining => route == null;
   final OpenRoadParameters parameters;
 
   double _distanceKm = 0;
@@ -102,8 +106,16 @@ class OpenRoadEngine {
 
   double get distanceKm => _distanceKm;
   double get virtualSpeedKmh => _speedMps * 3.6;
-  RoutePosition get position => route.at(_distanceKm);
-  bool get finished => _distanceKm >= route.distanceKm;
+  // An open session has distance and resistance but no geographic position.
+  // The adapter marks it as open training; hosts must not publish this sentinel.
+  RoutePosition get position =>
+      route?.at(_distanceKm) ??
+      RoutePosition(
+          point: const RoadPoint(0, 0, 0),
+          distanceKm: _distanceKm,
+          gradePercent: 0,
+          progress: 0);
+  bool get finished => route != null && _distanceKm >= route!.distanceKm;
 
   OpenRoadFrame advance(FtmsBikeData trainer, Duration elapsed) {
     final seconds = elapsed.inMicroseconds.clamp(0, 3000000) / 1000000;
@@ -119,7 +131,7 @@ class OpenRoadEngine {
       }
       _distanceKm = math.min(
         _distanceKm + _speedMps * seconds / 1000,
-        route.distanceKm,
+        route?.distanceKm ?? double.infinity,
       );
     }
 
